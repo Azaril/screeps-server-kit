@@ -57,7 +57,7 @@ The kit reads from **fixed paths** (no env vars, no directory walking):
    cp config/local.example.yml config/local.yml
    ```
 
-   At minimum, set your `steamKey`. Every other key is optional and documented inline in `config/local.example.yml`.
+   At minimum, set your `steamKey`. Every other key is optional and documented inline in `config/local.example.yml`. See [Configuration](#configuration) for the full reference.
 
 Verify what the kit resolved (secrets are redacted by construction):
 
@@ -176,6 +176,79 @@ cargo run -- cli "help(bots)"
 
 > Note: on a private server, neutral/NPC rooms default to `active=false` and are **frozen** (cores never deploy, creeps never act). After spawning a target in a neutral room, set the rooms active and **restart** the stack: `cargo run -- cli "storage.db.rooms.update({active:false},{\$set:{active:true}},{multi:true})"` then `server down` && `server up`.
 
+## Configuration
+
+Two files, fixed paths, no environment variables and no directory walking:
+
+| File | Path | Holds | Tracked? |
+|---|---|---|---|
+| credentials | `../.screeps.yaml` (the parent directory — your bot repo's root; `--config` is the only override) | `servers:` entries only — one per identity (bots **and** official servers); shared with your deploy pipeline | gitignored |
+| stack settings | `config/local.yml` | `steamKey`, ports, `tickMs`, `gcl`, spawn preference, the `bots:` list, the `image:` block | gitignored; every key documented in the committed `config/local.example.yml` |
+
+The kit reads **only** `servers:` from `.screeps.yaml`; other sections (e.g. build configs) are ignored.
+
+### `config/local.yml`, fully populated
+
+```yaml
+steamKey: your-steam-web-api-key-here   # REQUIRED before `server up`
+                                        # (https://steamcommunity.com/dev/apikey)
+ports:
+  game: 21025   # game/API port (published host-side and bound in-container)
+  cli: 21026    # server CLI port (likewise)
+tickMs: 100     # written to serverConfig.tickRate; floor 50
+gcl: 10         # GCL level each bot is raised to in bootstrap (raise-only;
+                # 1 disables — lifts the owned-room cap so bots can expand)
+spawn:          # first bot's spawn preference (optional; see "Bootstrap a fresh world")
+  room: W5N3
+bots:           # bot identities to bootstrap; each is a servers: entry
+  - ibex        # in ../.screeps.yaml
+  - ibex-2
+image:          # launcher image policy (optional; see "Building the launcher image")
+  name: screepers/screeps-launcher:latest
+```
+
+`config/local.yml` is optional for read-only commands (`config`, `open`, `cli`, `tick` against a running stack use the defaults), but `server up`/`bootstrap` need the `steamKey` — the error points here when it is missing. A typo'd key is a hard parse error (unknown fields are rejected), never a silently-ignored setting.
+
+### Operator identity vs bot identities
+
+**You are yourself; the bots are their own users.**
+
+- **The operator** logs in as a *person*: the Steam client or the web client at `http://127.0.0.1:21025/` — Steam auth works because the server runs with your `steamKey`, and your Steam persona becomes your in-game user the first time you sign in. If you also want password/API access to that user, set one through the masked CLI passthrough: `cargo run -- cli` then `setPassword('YourName', 'your-password')` (the password is masked in every echo/log).
+- **Each bot** is a `servers:` entry in `../.screeps.yaml` with its own username/password — registered by `bootstrap`, targeted by `deploy --user <entry>`. **Name bot entries after the bot (`ibex`, `ibex-2`, …), not after yourself**, so your own name stays the operator identity. This supports bot-vs-bot matches and playing alongside your bot on one world.
+
+Server-level commands (`deploy`, `config`, capture) act as **one** entry — an explicit `--server-name` if given, otherwise the **first `bots:` entry** (falling back to `private-server` when no bots are configured). `bootstrap` registers only the `bots:` entries, so pointing the acting identity anywhere else is a guaranteed 401 on a fresh world.
+
+```yaml
+# ../.screeps.yaml — one entry per bot identity
+servers:
+  ibex:
+    host: 127.0.0.1
+    port: 21025
+    secure: false
+    username: ibex
+    password: <bot password>
+    branch: default
+  ibex-2:
+    host: 127.0.0.1
+    port: 21025
+    secure: false
+    username: ibex-2
+    password: <bot password>
+    branch: default
+```
+
+With `bots: [ibex, ibex-2]` in `config/local.yml`, `bootstrap --reset` registers both users and places two spawns in distinct rooms; `deploy --user ibex` / `deploy --user ibex-2` push code independently.
+
+### Building the launcher image (optional)
+
+```bash
+cargo run -- server build-image
+```
+
+By default the launcher image is **pulled** (`screepers/screeps-launcher:latest`). To build it locally instead (the hermetic option), point `image.build.context` at a **full clone of [screepers/screeps-launcher](https://github.com/screepers/screeps-launcher)** — the Dockerfile lives at that repo's root. `server build-image` builds and tags it (`image.name`); `server up` also builds automatically when `build:` is configured and the image is absent. The build runs through BuildKit (the upstream Dockerfile is BuildKit-only).
+
+> On Windows, clone the launcher repo with `git clone -c core.autocrlf=false …` — a CRLF checkout breaks the Dockerfile's bash heredocs. A launcher *deployment* directory (just `config.yml` + `docker-compose.yml`) is **not** a buildable context.
+
 ## Usage
 
 The library exposes every CLI capability as a function. A minimal program that brings the stack up, bootstraps the world, and deploys a bot:
@@ -262,6 +335,34 @@ The kit manages a three-container stack — the screeps-launcher image plus `mon
 Two protocols drive the running server: the **world server CLI** (an HTTP endpoint on port 21026 that evaluates JavaScript in a Node `vm` sandbox — used for `resetAllData`, `setPassword`, tick control, and direct DB queries) and the **game REST/websocket API** (port 21025 — used for registration, signin, spawn placement, console streaming, and metrics). The game-API plumbing lives in the shared [screeps-rest-api](https://github.com/Azaril/screeps-rest-api) crate; deploy is a library call into [screeps-pack](https://github.com/Azaril/screeps-pack).
 
 Credentials are wrapped in `SecretString` from the moment they are parsed, so `Debug`/`Display` redact them by construction. The one credential-bearing command — the world CLI's `setPassword(...)` — is masked on every echo, log, and error path (the `vm` echoes command source in stack traces, so even error bodies are masked).
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `connecting to Docker — is Docker Desktop running?` | Start Docker Desktop and wait for the engine, then re-run. |
+| `server up` seems stuck after image pulls | First boot npm-installs the server in-container (~10 min budget). Progress lines show the launcher's latest log every 15 s; watch detail with `cargo run -- server logs -f`. |
+| `no Steam key available: ...` | Set `steamKey` in `config/local.yml` (copy `config/local.example.yml`; key from <https://steamcommunity.com/dev/apikey>). |
+| `reading credentials file ...\..\.screeps.yaml` | The parent directory's `.screeps.yaml` is missing — create it (see [Configuration](#configuration)). The path is fixed (`--config` is the only override); there is no directory walking. |
+| `config/local.yml has an unexpected shape` | A typo'd key (the parser rejects unknown fields by design). Compare against `config/local.example.yml` — keys are camelCase (`steamKey`, `tickMs`). |
+| `resolving bots entry '<name>'` | Every `bots:` name in `config/local.yml` must be a `servers:` entry in `../.screeps.yaml` with `username`+`password` (token-auth entries cannot be bots). |
+| `image.build.context ... has no Dockerfile` from `build-image` | The context is a launcher *deployment* dir (config + compose), not the launcher *source* repo. Clone <https://github.com/screepers/screeps-launcher> and point `image.build.context` at the clone root. |
+| `image build failed: ... exit code: 2 ([stage-1 2/4] RUN <<-EOT bash)` | CRLF checkout: the Dockerfile's bash heredocs break under Windows line-ending conversion. Re-clone with `git clone -c core.autocrlf=false`. |
+| Port already in use (create/start error mentioning `0.0.0.0:21025`) | Another server holds the port. Stop it, or set `ports.game/cli` in `config/local.yml` to free ports, then `server destroy --yes` and `server up`. |
+| Changed `ports` but `status` shows the old ones | Published ports are fixed at container creation; `up` warns about this. Run `server destroy --yes` then `server up`. |
+| `server CLI tcp://127.0.0.1:21026 -> refused/timeout` in `status` | The CLI bind is forced to `0.0.0.0` in the merged config, but if you're running a foreign/manually-started stack (which binds in-container `127.0.0.1` by default and publishes no CLI port), use the fallback: `docker exec -it screeps-eval-launcher screeps-launcher cli` (substitute the container name from `status`). |
+| World/server behaving oddly after config experiments; `mongosh`/auth errors in logs | Stale volumes from an earlier configuration. Factory-reset: `server destroy --yes` then `server up` (full first boot again). |
+| `launcher container exited while waiting for the API` | The error includes the last launcher logs. Typical causes: no/invalid steam key in `config/local.yml`, mongo/redis not healthy (re-run `server up`), or a broken locally-built image (re-run `server build-image`). |
+| `signin as '<user>' rejected (401)` | The server-side password differs from `.screeps.yaml` (e.g. the entry changed since the user was created). Run `bootstrap` — it converges the password via `setPassword` before signing in. |
+| `registering user ... failed: Registration is automatically disabled` | The server has the `SERVER_PASSWORD` env var set (screepsmod-auth closes registration). Not set by this kit. |
+| `spawn.room ... is not a valid first-spawn room` | The room lacks an unowned controller or 2 sources, or was claimed by an earlier bot (the error lists valid candidates), or the world was seeded with a different map. Pick a listed room or drop `spawn.room` for auto-pick. |
+| Simulation racing (hundreds of ticks/s) after a manual CLI `system.resetAllData()` | A reset flushes redis, including the tick duration — the loop runs unthrottled. `tick set 100` (or re-run `bootstrap`, which always re-applies `tickMs`). |
+| `cargo build failed` from `deploy` | The real compiler error is in the streamed output just above. Common toolchain gaps: nightly not installed (`rust-toolchain.toml` pins it), missing `rust-src` component (build-std needs it), missing `wasm32-unknown-unknown` target. |
+| `wasm-bindgen ... emitted JS whose wasm-load tail does not match` from `deploy` | The bot's `Cargo.lock` moved to a wasm-bindgen version whose output [screeps-pack](https://github.com/Azaril/screeps-pack)'s anchored glue patcher has not been verified against. |
+| `uploading ... modules to ...` failed | The upload threw (server down/unreachable, or signin rejected). Run `server status`, then retry; `bootstrap` converges a stale password. |
+| `websocket auth failed (token rejected)` during a capture run | The signin token was rejected — usually a stale server-side password. Run `bootstrap` to converge credentials, then retry. |
+| `run did not reach tick ... within the ... safety budget` | The simulation is paused (`tick resume`) or crawling far below the configured rate. Check `server status` and the tick rate. |
+| `console.jsonl` is empty/small for short runs | Normal if the bot logs sparsely and empty per-tick console events are not written. CPU/creeps still prove liveness in `metrics.jsonl`. |
 
 ## Related crates
 
