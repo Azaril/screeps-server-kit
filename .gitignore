@@ -1,0 +1,10 @@
+# Build artifacts
+/target
+Cargo.lock
+
+# Local stack settings: steamKey + machine-specific overrides (P0.A9(b)).
+# The committed template is config/local.example.yml.
+/config/local.yml
+
+# Credentials: server hosts + tokens (never commit).
+.screeps.yaml
