@@ -48,6 +48,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 secrecy = { version = "0.10", features = ["serde"] }
 
-# Pure git deps, no [patch] table, so this crate clones / installs standalone.
-# Transitive crates (screeps-foreman/cache/common/visual via screeps-prospector)
-# resolve from their published repos.
+# Pure git deps, no [patch] table here, so this crate clones / installs standalone.
