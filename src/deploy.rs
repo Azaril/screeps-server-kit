@@ -16,8 +16,9 @@
 //! credentials file's directory (`../.screeps.yaml` → the repo root)
 //! is the workspace root, and screeps-pack resolves the single cdylib
 //! member from there — no js_tools/, no package.json, no node. The
-//! npm pipeline (`js_tools/deploy.js`) remains in the repo ONLY as an
-//! optional user-customization escape hatch; nothing here invokes it.
+//! former npm pipeline (`js_tools/deploy.js`) was removed once
+//! screeps-pack reached parity (see `../screeps-pack/PARITY.md`);
+//! nothing here ever invoked it.
 
 use crate::config::KitConfig;
 use anyhow::{Context, Result};
